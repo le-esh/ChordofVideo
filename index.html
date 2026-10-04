@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel chorus</title>
+<style>
+  @property --chord-hue { syntax: '<number>'; inherits: true; initial-value: 200; }
+  :root{
+    --night:#0b0f0a; --edge:#1c2a19; --ink:#d9e6d4; --muted:#7f9478; --hot:#7fe08a; --panel:rgba(11,15,10,.94);
+    --chord-hue: 200;
+  }
+  html,body{margin:0;height:100%;color:var(--ink);
+    background: radial-gradient(ellipse 120% 90% at 50% 15%, hsl(var(--chord-hue) 42% 12%) 0%, var(--night) 68%);
+    transition: --chord-hue .6s ease;
+    font:13px/1.45 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;overflow:hidden}
+  body{display:flex;flex-direction:column}
+  #stage{position:relative;z-index:0;flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:16px;overflow:hidden}
+  canvas#grid{image-rendering:pixelated;border:1px solid var(--edge);max-width:min(88vw,64vh);max-height:min(52vh,64vw);aspect-ratio:1/1}
+  #gauge{display:flex;flex-direction:column;align-items:center;gap:6px;width:min(92vw,460px)}
+  #gaugeLabels{display:flex;justify-content:space-between;align-items:baseline;width:100%;font-size:13px;color:var(--muted)}
+  #gaugeLabels .tag{color:#5a6e53;margin-right:6px;font-size:11px;text-transform:lowercase}
+  #gaugeLabels b{color:var(--ink);font-weight:600}
+  #meterRow{display:flex;align-items:center;gap:10px;width:100%}
+  #meter{flex:1;height:16px;background:#152014;border:1px solid var(--edge);position:relative;overflow:hidden}
+  #meterFill{position:absolute;inset:0;width:0%;background:var(--hot);transition:width .08s linear}
+  #meterPct{min-width:3.2em;text-align:right;color:var(--ink);font-size:13px}
+  #dwellInfo{font-size:11px;color:#5a6e53;width:100%;text-align:center}
+  /* 1fr/auto/1fr: the two side columns are always equal width, so the center column (the grid)
+     sits at the true horizontal center of the row no matter what's in the side slots. */
+  #stageRow{position:relative;z-index:1;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;width:100%}
+  #stageMain{display:flex;flex-direction:column;align-items:center;gap:14px;min-width:0}
+
+  /* both side columns share the same width (for grid-centering) and overall height, so left
+     (preview + drop zone, stacked) and right (constant picker + digit strip) balance visually. */
+  .sideCol{justify-self:center;width:min(12vw,16vh);height:min(26vw,34vh);display:flex;flex-direction:column;gap:8px}
+  #leftSlot,#dropzone{width:100%;flex:1;min-height:0}
+  video#preview{width:100%;height:100%;object-fit:cover;border:1px solid var(--edge);opacity:.85}
+  video#preview.mirrored{transform:scaleX(-1)}
+  #dropzone{border:1px dashed var(--edge);color:#5a6e53;font-size:10px;text-align:center;line-height:1.3;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;transition:border-color .15s,color .15s}
+  #dropzone:hover,#dropzone:focus-visible{border-color:var(--hot);color:var(--muted);outline:none}
+  #dropzone.dragover{border-color:var(--hot);color:var(--ink);background:rgba(127,224,138,.08)}
+
+  #rightCol select{width:100%}
+  #piSymbolBig{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+    font-size:min(6vw,8vh);line-height:1;color:var(--hot);opacity:.8}
+  #piSymbolBig.hidden{display:none}
+  #piStrip{display:none;flex-direction:column;gap:6px;flex:1;min-height:0}
+  #piStrip.on{display:flex}
+  #piDigitsView{display:flex;flex-direction:column;gap:1px;flex:1;min-height:0;overflow:hidden}
+  #piDigitsView span{flex:1;min-height:7px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--muted);background:#152014}
+  #piDigitsView span.now{outline:1px solid var(--hot);color:var(--night);font-weight:700}
+  #piReadout{font-size:10px;color:var(--ink);text-align:center}
+
+  #gridWrap{position:relative;display:inline-block;z-index:1}
+  #colLabels{position:absolute;left:0;right:0;bottom:100%;margin-bottom:6px;display:flex;font-size:12px;color:var(--muted)}
+  #colLabels span{flex:1;text-align:center}
+  #rowLabels{position:absolute;top:0;bottom:0;right:100%;margin-right:8px;width:30px;display:flex;flex-direction:column;font-size:12px;color:var(--muted)}
+  #rowLabels span{flex:1;display:flex;align-items:center;justify-content:flex-end}
+
+  .ambient{position:absolute;left:0;right:0;height:48%;pointer-events:none;opacity:0;z-index:0;transition:opacity .25s linear}
+  #ambientTop{top:0;background:radial-gradient(ellipse 75% 100% at 50% 0%, rgba(127,184,224,.4), transparent 72%)}
+  #ambientBottom{bottom:0;background:radial-gradient(ellipse 75% 100% at 50% 100%, rgba(201,143,224,.4), transparent 72%)}
+
+  #panel{flex-shrink:0;max-height:44vh;overflow-y:auto;padding:10px 16px 12px;background:var(--panel);
+    border-top:1px solid var(--edge);display:flex;flex-wrap:wrap;align-items:flex-start;gap:20px;font-family:ui-monospace,monospace}
+  .panelCol{display:flex;flex-direction:column;gap:10px}
+  #panelLeft{flex:1 1 480px}
+  #panelRight{flex:1 1 300px;max-width:440px;padding-left:18px;border-left:1px solid var(--edge);color:var(--muted);font-size:12px}
+  .howList{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:6px}
+  .howList li{line-height:1.4}
+  .ctrlRow{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center}
+  #panel label{display:flex;align-items:center;gap:7px;white-space:nowrap;color:var(--muted)}
+  #panel output{min-width:1.4em;color:var(--ink)}
+  input[type=range]{width:96px;accent-color:var(--hot)}
+  select,button{background:#111a0e;color:var(--ink);border:1px solid #2a3e24;border-radius:3px;padding:4px 7px;font:inherit}
+  button{cursor:pointer}
+  button.primary{background:#1c3417;border-color:#3a5c30}
+  select:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--hot);outline-offset:2px}
+  #chordRow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;color:var(--muted)}
+  #presetRow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;color:var(--muted)}
+  #presetRow button.active{background:#1c3417;border-color:var(--hot);color:var(--ink)}
+  select:disabled{opacity:.45;cursor:not-allowed}
+  #leanGauge{display:none;flex-direction:column;gap:4px}
+  #leanGauge.on{display:flex}
+  .leanRow{display:flex;align-items:center;gap:8px}
+  .leanLabel{width:44px;color:var(--muted);font-size:12px}
+  .leanBar{flex:1;height:10px;background:#152014;border:1px solid var(--edge);position:relative;overflow:hidden}
+  .leanFill{position:absolute;inset:0;width:50%;transition:width .12s linear}
+  .leanFill.major{background:#7fb8e0}
+  .leanFill.minor{background:#c98fe0}
+  .leanRow output{min-width:3em;text-align:right;color:var(--ink);font-size:12px}
+  .leanNote{margin:2px 0 0;font-size:11px;color:#5a6e53}
+  .slot{display:flex;gap:4px;align-items:center;padding:3px 6px;border:1px solid var(--edge);border-radius:3px}
+  .slot.active{border-color:var(--hot);color:var(--ink)}
+  #panelRight .howTitle{color:var(--ink);font-weight:600;margin-bottom:4px}
+  #panelRight p{margin:.5em 0 0}
+
+  #overlay{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(11,15,10,.92);text-align:center;padding:24px;gap:18px}
+  #overlay h1{font:400 clamp(26px,5.5vw,44px)/1.15 Georgia,"Iowan Old Style",serif;margin:0}
+  #overlay p{margin:0;max-width:46ch;color:var(--muted);font-size:15px}
+  #overlay .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  #overlay input[type=file]{color:var(--muted)}
+  #camWarn{color:#e0a37f;font-size:13px;min-height:1.2em}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="ambientTop" class="ambient"></div>
+  <div id="ambientBottom" class="ambient"></div>
+  <div id="stageRow">
+    <div id="leftCol" class="sideCol">
+      <div id="leftSlot"></div>
+      <div id="dropzone" role="button" tabindex="0" aria-label="Drop a video here, or click to choose one">
+        <div id="dropPrompt">Drop a video<br>or click to choose</div>
+      </div>
+    </div>
+    <div id="stageMain">
+      <div id="gauge">
+        <div id="gaugeLabels">
+          <span><span class="tag">now</span><b id="chordName">–</b></span>
+          <span><span class="tag">next</span><b id="nextChordName">–</b></span>
+        </div>
+        <div id="meterRow">
+          <div id="meter" role="img" aria-label="how much sound has built up toward the next chord">
+            <div id="meterFill"></div>
+          </div>
+          <span id="meterPct">0%</span>
+        </div>
+        <div id="dwellInfo"></div>
+      </div>
+      <div id="gridWrap">
+        <div id="colLabels" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <div id="rowLabels" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <canvas id="grid" width="400" height="400"></canvas>
+      </div>
+    </div>
+    <div id="rightCol" class="sideCol">
+      <select id="piConstant" aria-label="Irrational constant">
+        <option value="pi">&pi;</option>
+        <option value="e">e</option>
+        <option value="sqrt2">&radic;2</option>
+        <option value="phi">&phi;</option>
+      </select>
+      <div id="piSymbolBig" aria-hidden="true">&pi;</div>
+      <div id="piStrip">
+        <div id="piDigitsView"></div>
+        <span id="piReadout"></span>
+      </div>
+    </div>
+  </div>
+</div>
+<video id="preview" muted playsinline style="display:none"></video>
+<video id="src" muted playsinline style="display:none"></video>
+
+<div id="panel">
+  <div id="panelLeft" class="panelCol">
+    <div class="ctrlRow">
+      <button id="swap" type="button">Change video</button>
+      <button id="reset" type="button">Reset</button>
+    </div>
+    <div class="ctrlRow">
+      <label><input id="gateToggle" type="checkbox"> Pixel noise gate <input id="gate" type="range" min="0" max="20" value="6" disabled><output id="gateOut">6</output></label>
+    </div>
+    <div class="ctrlRow">
+      <label><input id="propToggle" type="checkbox" checked> Propagation</label>
+      <label>Spread strength <input id="spread" type="range" min="0" max="80" value="35"><output id="spreadOut">0.35</output></label>
+      <label>Echo volume <input id="echoVol" type="range" min="0" max="100" value="35"><output id="echoVolOut">35%</output></label>
+      <label><input id="wrapToggle" type="checkbox"> Wrap edges</label>
+    </div>
+    <div class="ctrlRow">
+      <label><input id="piToggle" type="checkbox" checked> Irrational engine</label>
+      <label>Push depth <input id="piDepth" type="range" min="0" max="100" value="70"><output id="piDepthOut">70%</output></label>
+      <label>Pi speed <input id="piGain" type="range" min="0" max="80" value="30"><output id="piGainOut">3.0</output>/s</label>
+    </div>
+    <div class="ctrlRow">
+      <label>Chord sensitivity <input id="sens" type="range" min="0" max="100" value="45"></label>
+      <label>Memory <input id="mem" type="range" min="0" max="100" value="55"></label>
+    </div>
+    <div class="ctrlRow">
+      <label><input id="dwellToggle" type="checkbox"> Min/max dwell</label>
+      <label>Min dwell <input id="minDwell" type="range" min="1" max="10" value="3" disabled><output id="minDwellOut">3</output>s</label>
+      <label>Max dwell <input id="maxDwell" type="range" min="5" max="40" value="20" disabled><output id="maxDwellOut">20</output>s</label>
+    </div>
+    <div id="presetRow">
+      <span class="muted">Progression:</span>
+      <button id="preset1" type="button">1: Major</button>
+      <button id="preset2" type="button">2: Minor</button>
+      <button id="preset3" type="button">3: Interactive</button>
+    </div>
+    <div id="chordRow"></div>
+    <div id="leanGauge">
+      <div class="leanRow"><span class="leanLabel">major</span><div class="leanBar"><div id="majorFill" class="leanFill major"></div></div><output id="majorPct">50%</output></div>
+      <div class="leanRow"><span class="leanLabel">minor</span><div class="leanBar"><div id="minorFill" class="leanFill minor"></div></div><output id="minorPct">50%</output></div>
+      <p class="leanNote">top motion &rarr; major, bottom motion &rarr; minor, for the next chord</p>
+    </div>
+  </div>
+
+  <div id="panelRight" class="panelCol">
+    <div class="howTitle">How it works</div>
+    <ul class="howList">
+      <li>40&times;40 grid; a cell's brightness crossing one of 6 levels plays a note. Column = scale degree, row = octave (higher on screen = higher pitch).</li>
+      <li>Notes add energy to the bar above; full bar (or enough quiet time) advances to the next chord.</li>
+      <li>Progression 3 is interactive: top-of-frame motion &rarr; major, bottom &rarr; minor.</li>
+      <li>Propagation (optional): a fired cell can nudge neighbors into firing too, quietly, rippling outward for a few seconds. Wrap edges makes the grid a torus, so ripples can cross from one edge to the opposite one.</li>
+      <li>Irrational engine (optional): a digit stream (&pi;, e, &radic;2 or &phi;) pushes propagation stronger or weaker as it advances &mdash; and the screen's own activity sets how fast that stream moves, so the grid and the digits keep nudging each other.</li>
+    </ul>
+  </div>
+</div>
+
+<div id="overlay">
+  <h1>Pixel chorus</h1>
+  <p>A 40&times;40 grid watches a video and turns brightness changes into notes. Upload a clip or use your camera &mdash; sound starts once you pick one.</p>
+  <div class="row">
+    <button id="pickFile" class="primary" type="button">Upload a video</button>
+    <button id="pickCam" class="primary" type="button">Use webcam</button>
+  </div>
+  <input id="fileInput" type="file" accept="video/*" style="display:none">
+  <div id="camWarn"></div>
+</div>
+
+<script>
+// ==== CORE START ====
+const PENTATONIC = {
+  major: [0, 2, 4, 7, 9],
+  minor: [0, 3, 5, 7, 10],
+  dom7:  [0, 2, 4, 7, 10],
+};
+function quantizeLevel(v) { return Math.max(0, Math.min(5, Math.round(v / 20))); }
+
+class PixelField {
+  constructor(cols = 40, rows = 40, bandsX = 5, bandsY = 5) {
+    this.cols = cols; this.rows = rows;
+    this.bandsX = bandsX; this.bandsY = bandsY;
+    this.colsPerBand = cols / bandsX;
+    this.rowsPerBand = rows / bandsY;
+    this.octaves = [2, 3, 4, 5, 6];
+
+    this.prevRaw = new Float32Array(cols * rows).fill(-1);
+    this.prevLevel = new Int8Array(cols * rows).fill(-1);
+
+    this.sensitivity = 6;
+    this.gateEnabled = false;
+    this.dwellEnabled = false;
+    this.interactive = false;
+    this.progression = [
+      { root: 0, quality: 'major' }, { root: 9, quality: 'minor' },
+      { root: 5, quality: 'major' }, { root: 7, quality: 'dom7' },
+    ];
+    this.chordIndex = 0;
+    this.energy = 0;
+    this.topEnergy = 0;    // stimulus from the top half of the frame since the last chord change
+    this.bottomEnergy = 0; // stimulus from the bottom half, since the last chord change
+    this.threshold = 300;
+    this.decayPerSec = 25;
+    this.minDwell = 3;
+    this.maxDwell = 20;
+    this.t = 0; this.timeInChord = 0;
+    this.maxTriggersPerTick = 24;
+    this.onFire = null; this.onChordChange = null;
+
+    // propagation: a fired cell nudges its 8 neighbors; if a neighbor's nudged-up level clears the
+    // threshold (checked against *last* tick's settled values, so a pulse moves exactly one cell per
+    // tick, never cascading across the whole grid within a single tick), it echoes on its own.
+    this.propagationEnabled = true;
+    this.excite = new Float32Array(cols * rows);
+    this.refractory = new Float32Array(cols * rows);
+    this.exciteThreshold = 0.5;
+    this.exciteDecayPerSec = 2.5;
+    this.refractoryTime = 1.2;
+    this.exciteSpread = 0.35;
+    this.echoVelocityScale = 0.35;
+    this.wrapEnabled = false; // topology: bounded edges (off) or wrap-around, torus-style (on)
+    this.nb8Bounded = Array.from({ length: cols * rows }, (_, idx) => {
+      const x = idx % cols, y = (idx / cols) | 0, out = [];
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && nx < cols && ny >= 0 && ny < rows) out.push(ny * cols + nx);
+      }
+      return out;
+    });
+    this.nb8Wrapped = Array.from({ length: cols * rows }, (_, idx) => {
+      const x = idx % cols, y = (idx / cols) | 0, out = [];
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = (x + dx + cols) % cols, ny = (y + dy + rows) % rows;
+        out.push(ny * cols + nx);
+      }
+      return out;
+    });
+
+    // the irrational engine: a digit sequence (pi by default) that (a) swings the propagation
+    // spread strength up or down each tick, and (b) is itself advanced faster when the screen has
+    // been more active lately -- so the grid and the digit stream push on each other both ways.
+    this.piEnabled = true;
+    this.piDigits = [0];
+    this.piIndex = 0;
+    this.piProgress = 0;
+    this.piBaseRate = 0.15;   // digits/sec consumed even when the screen is totally still
+    this.piActivityGain = 3;  // extra digits/sec at full activity (energy >= threshold)
+    this.piModDepth = 0.7;    // 0..1, how hard the current digit pushes spread away from its slider value
+  }
+  get nb8() { return this.wrapEnabled ? this.nb8Wrapped : this.nb8Bounded; }
+  setIrrationalDigits(arr) {
+    this.piDigits = (arr && arr.length) ? arr : [0];
+    this.piIndex = 0; this.piProgress = 0;
+  }
+  get currentDigit() { return this.piDigits[this.piIndex] ?? 0; }
+  get effectiveSpread() {
+    if (!this.piEnabled) return this.exciteSpread;
+    const mult = 1 + this.piModDepth * (this.currentDigit / 9 - 0.5);
+    return this.exciteSpread * mult;
+  }
+  get chord() { return this.progression[this.chordIndex]; }
+  noteFor(gx, gy) {
+    const { root, quality } = this.chord;
+    const scale = PENTATONIC[quality];
+    const degree = scale[gx % scale.length];
+    const pc = (root + degree) % 12;
+    // gy counts down from the top of the frame (row 0); reverse it so the top of the
+    // video is the highest octave and the bottom is the lowest, like a musical staff.
+    const revGy = (this.bandsY - 1) - (gy % this.octaves.length);
+    const octave = this.octaves[revGy];
+    return { pc, octave };
+  }
+  setProgressionSlot(i, root, quality) { this.progression[i] = { root, quality }; }
+  reset() {
+    this.prevRaw.fill(-1); this.prevLevel.fill(-1);
+    this.chordIndex = 0; this.energy = 0; this.topEnergy = 0; this.bottomEnergy = 0;
+    this.excite.fill(0); this.refractory.fill(0);
+    this.piIndex = 0; this.piProgress = 0;
+    this.t = 0; this.timeInChord = 0;
+  }
+
+  process(pixels, dt) {
+    this.t += dt; this.timeInChord += dt;
+    if (this.piEnabled) {
+      // the grid's own recent activity sets how fast the digit stream moves -- quiet screen,
+      // the digit barely crawls forward; lots of motion, it races through several digits a second.
+      const activity = Math.min(1, this.energy / this.threshold);
+      this.piProgress += (this.piBaseRate + this.piActivityGain * activity) * dt;
+      while (this.piProgress >= 1 && this.piDigits.length) { this.piIndex = (this.piIndex + 1) % this.piDigits.length; this.piProgress -= 1; }
+    }
+    this.energy = Math.max(0, this.energy - this.decayPerSec * dt);
+    this.topEnergy = Math.max(0, this.topEnergy - this.decayPerSec * dt);
+    this.bottomEnergy = Math.max(0, this.bottomEnergy - this.decayPerSec * dt);
+    const N = this.cols * this.rows;
+    for (let i = 0; i < N; i++) {
+      this.excite[i] = Math.max(0, this.excite[i] - this.exciteDecayPerSec * dt);
+      this.refractory[i] = Math.max(0, this.refractory[i] - dt);
+    }
+    // echoes this tick check last tick's settled excitation, not anything added during this tick --
+    // that's what keeps a pulse moving one hop per tick instead of cascading the whole grid at once.
+    const exciteSnapshot = this.propagationEnabled ? this.excite.slice() : null;
+    const effSpread = this.effectiveSpread; // the pi digit's current push on spread, if enabled
+
+    const events = [];
+    for (let idx = 0; idx < N; idx++) {
+      const raw = pixels[idx];
+      const prev = this.prevRaw[idx];
+      if (prev < 0) { this.prevRaw[idx] = raw; this.prevLevel[idx] = quantizeLevel(raw); continue; }
+      if (this.gateEnabled && Math.abs(raw - prev) < this.sensitivity) continue;
+      if (this.propagationEnabled && this.refractory[idx] > 0) continue;
+      this.prevRaw[idx] = raw;
+      const lvl = quantizeLevel(raw), old = this.prevLevel[idx];
+      if (lvl !== old) {
+        this.prevLevel[idx] = lvl;
+        const delta = Math.abs(lvl - old) * 20;
+        const x = idx % this.cols, y = (idx / this.cols) | 0;
+        const gx = Math.min(this.bandsX - 1, Math.floor(x / this.colsPerBand));
+        const gy = Math.min(this.bandsY - 1, Math.floor(y / this.rowsPerBand));
+        const { pc, octave } = this.noteFor(gx, gy);
+        const velocity = Math.min(1, delta / 100);
+        events.push({ x, y, gx, gy, pc, octave, velocity, delta, echo: false });
+        this.energy += velocity;
+        if (y < this.rows / 2) this.topEnergy += velocity; else this.bottomEnergy += velocity;
+        if (this.propagationEnabled) {
+          this.refractory[idx] = this.refractoryTime; this.excite[idx] = 0;
+          for (const n of this.nb8[idx]) this.excite[n] += effSpread;
+        }
+      }
+    }
+    if (this.propagationEnabled) {
+      for (let idx = 0; idx < N; idx++) {
+        if (this.refractory[idx] > 0) continue; // already fired for real this tick, or still resting
+        if (exciteSnapshot[idx] < this.exciteThreshold) continue;
+        const x = idx % this.cols, y = (idx / this.cols) | 0;
+        const gx = Math.min(this.bandsX - 1, Math.floor(x / this.colsPerBand));
+        const gy = Math.min(this.bandsY - 1, Math.floor(y / this.rowsPerBand));
+        const { pc, octave } = this.noteFor(gx, gy);
+        const velocity = this.echoVelocityScale;
+        events.push({ x, y, gx, gy, pc, octave, velocity, delta: 0, echo: true });
+        this.energy += velocity;
+        if (y < this.rows / 2) this.topEnergy += velocity; else this.bottomEnergy += velocity;
+        this.refractory[idx] = this.refractoryTime; this.excite[idx] = 0;
+        for (const n of this.nb8[idx]) this.excite[n] += effSpread;
+      }
+    }
+    let fired = events;
+    if (events.length > this.maxTriggersPerTick) {
+      fired = events.slice().sort((a, b) => b.velocity - a.velocity).slice(0, this.maxTriggersPerTick);
+    }
+    if (this.onFire) for (const e of fired) this.onFire(e);
+
+    let advanced = false;
+    if (this.dwellEnabled) {
+      if (this.timeInChord >= this.minDwell && this.energy >= this.threshold) advanced = true;
+      else if (this.timeInChord >= this.maxDwell) advanced = true;
+    } else {
+      // no floor or ceiling on timing: energy alone decides, so it can also fire back-to-back
+      if (this.energy >= this.threshold) advanced = true;
+    }
+    if (advanced) {
+      const nextIndex = (this.chordIndex + 1) % this.progression.length;
+      if (this.interactive) {
+        // decide the upcoming chord's quality from where on screen the recent stimulus was:
+        // more at the bottom half leans minor, more at the top half leans major (ties -> major).
+        const quality = this.bottomEnergy > this.topEnergy ? 'minor' : 'major';
+        this.progression[nextIndex] = { root: this.progression[nextIndex].root, quality };
+      }
+      this.chordIndex = nextIndex;
+      this.energy = 0; this.topEnergy = 0; this.bottomEnergy = 0; this.timeInChord = 0;
+      if (this.onChordChange) this.onChordChange(this.chord, this.chordIndex);
+    }
+    return { events: fired, totalEvents: events.length, advanced };
+  }
+}
+// ==== CORE END ====
+
+// ==== APP START ====
+const $ = id => document.getElementById(id);
+// === IRRATIONAL_DIGITS_MARKER === (spliced in below: verified 2000-digit strings for pi, e, sqrt2, phi)
+const IRRATIONAL_SETS = {
+  pi: '31415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679821480865132823066470938446095505822317253594081284811174502841027019385211055596446229489549303819644288109756659334461284756482337867831652712019091456485669234603486104543266482133936072602491412737245870066063155881748815209209628292540917153643678925903600113305305488204665213841469519415116094330572703657595919530921861173819326117931051185480744623799627495673518857527248912279381830119491298336733624406566430860213949463952247371907021798609437027705392171762931767523846748184676694051320005681271452635608277857713427577896091736371787214684409012249534301465495853710507922796892589235420199561121290219608640344181598136297747713099605187072113499999983729780499510597317328160963185950244594553469083026425223082533446850352619311881710100031378387528865875332083814206171776691473035982534904287554687311595628638823537875937519577818577805321712268066130019278766111959092164201989380952572010654858632788659361533818279682303019520353018529689957736225994138912497217752834791315155748572424541506959508295331168617278558890750983817546374649393192550604009277016711390098488240128583616035637076601047101819429555961989467678374494482553797747268471040475346462080466842590694912933136770289891521047521620569660240580381501935112533824300355876402474964732639141992726042699227967823547816360093417216412199245863150302861829745557067498385054945885869269956909272107975093029553211653449872027559602364806654991198818347977535663698074265425278625518184175746728909777727938000816470600161452491921732172147723501414419735685481613611573525521334757418494684385233239073941433345477624168625189835694855620992192221842725502542568876717904946016534668049886272327917860857843838279679766814541009538837863609506800642251252051173929848960841284886269456042419652850222106611863067442786220391949450471237137869609563643719172874677646575739624138908658326459958133904780275900'.split('').map(Number),
+  e: '27182818284590452353602874713526624977572470936999595749669676277240766303535475945713821785251664274274663919320030599218174135966290435729003342952605956307381323286279434907632338298807531952510190115738341879307021540891499348841675092447614606680822648001684774118537423454424371075390777449920695517027618386062613313845830007520449338265602976067371132007093287091274437470472306969772093101416928368190255151086574637721112523897844250569536967707854499699679468644549059879316368892300987931277361782154249992295763514822082698951936680331825288693984964651058209392398294887933203625094431173012381970684161403970198376793206832823764648042953118023287825098194558153017567173613320698112509961818815930416903515988885193458072738667385894228792284998920868058257492796104841984443634632449684875602336248270419786232090021609902353043699418491463140934317381436405462531520961836908887070167683964243781405927145635490613031072085103837505101157477041718986106873969655212671546889570350354021234078498193343210681701210056278802351930332247450158539047304199577770935036604169973297250886876966403555707162268447162560798826517871341951246652010305921236677194325278675398558944896970964097545918569563802363701621120477427228364896134225164450781824423529486363721417402388934412479635743702637552944483379980161254922785092577825620926226483262779333865664816277251640191059004916449982893150566047258027786318641551956532442586982946959308019152987211725563475463964479101459040905862984967912874068705048958586717479854667757573205681288459205413340539220001137863009455606881667400169842055804033637953764520304024322566135278369511778838638744396625322498506549958862342818997077332761717839280349465014345588970719425863987727547109629537415211151368350627526023264847287039207643100595841166120545297030236472549296669381151373227536450988890313602057248176585118063036442812314965507047510254465011727211555194866850800368532281831521960037356252794495158284188294787610852639813'.split('').map(Number),
+  sqrt2: '14142135623730950488016887242096980785696718753769480731766797379907324784621070388503875343276415727350138462309122970249248360558507372126441214970999358314132226659275055927557999505011527820605714701095599716059702745345968620147285174186408891986095523292304843087143214508397626036279952514079896872533965463318088296406206152583523950547457502877599617298355752203375318570113543746034084988471603868999706990048150305440277903164542478230684929369186215805784631115966687130130156185689872372352885092648612494977154218334204285686060146824720771435854874155657069677653720226485447015858801620758474922657226002085584466521458398893944370926591800311388246468157082630100594858704003186480342194897278290641045072636881313739855256117322040245091227700226941127573627280495738108967504018369868368450725799364729060762996941380475654823728997180326802474420629269124859052181004459842150591120249441341728531478105803603371077309182869314710171111683916581726889419758716582152128229518488472089694633862891562882765952635140542267653239694617511291602408715510135150455381287560052631468017127402653969470240300517495318862925631385188163478001569369176881852378684052287837629389214300655869568685964595155501644724509836896036887323114389415576651040883914292338113206052433629485317049915771756228549741438999188021762430965206564211827316726257539594717255934637238632261482742622208671155839599926521176252698917540988159348640083457085181472231814204070426509056532333398436457865796796519267292399875366617215982578860263363617827495994219403777753681426217738799194551397231274066898329989895386728822856378697749662519966583525776198939322845344735694794962952168891485492538904755828834526096524096542889394538646625744927556381964410316979833061852019379384940057156333720548068540575867999670121372239475821426306585132217408832382947287617393647467837431960001592188807347857617252211867490424977366929207311096369721608933708661156734585334833295254675851644710757848602463600'.split('').map(Number),
+  phi: '16180339887498948482045868343656381177203091798057628621354486227052604628189024497072072041893911374847540880753868917521266338622235369317931800607667263544333890865959395829056383226613199282902678806752087668925017116962070322210432162695486262963136144381497587012203408058879544547492461856953648644492410443207713449470495658467885098743394422125448770664780915884607499887124007652170575179788341662562494075890697040002812104276217711177780531531714101170466659914669798731761356006708748071013179523689427521948435305678300228785699782977834784587822891109762500302696156170025046433824377648610283831268330372429267526311653392473167111211588186385133162038400522216579128667529465490681131715993432359734949850904094762132229810172610705961164562990981629055520852479035240602017279974717534277759277862561943208275051312181562855122248093947123414517022373580577278616008688382952304592647878017889921990270776903895321968198615143780314997411069260886742962267575605231727775203536139362107673893764556060605921658946675955190040055590895022953094231248235521221241544400647034056573479766397239494994658457887303962309037503399385621024236902513868041457799569812244574717803417312645322041639723213404444948730231541767689375210306873788034417009395440962795589867872320951242689355730970450959568440175551988192180206405290551893494759260073485228210108819464454422231889131929468962200230144377026992300780308526118075451928877050210968424936271359251876077788466583615023891349333312231053392321362431926372891067050339928226526355620902979864247275977256550861548754357482647181414512700060238901620777322449943530889990950168032811219432048196438767586331479857191139781539780747615077221175082694586393204565209896985556781410696837288405874610337810544439094368358358138113116899385557697548414914453415091295407005019477548616307542264172939468036731980586183391832859913039607201445595044977921207612478564591616083705949878600697018940988640076443617093341727091914336501371'.split('').map(Number),
+};
+const field = new PixelField();
+const PC_NAMES = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+const QUALITY_LABEL = { major: 'major', minor: 'minor', dom7: '7' };
+
+// -- sound: short plucked oscillators, master gain backs off as voice count grows --
+const audio = {
+  ctx: null, voices: 0,
+  start() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const c = this.ctx = new AC();
+      this.master = c.createGain(); this.master.gain.value = 0.5;
+      const comp = c.createDynamicsCompressor();
+      this.master.connect(comp); comp.connect(c.destination);
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  play(pc, octave, pan, vel) {
+    const c = this.ctx;
+    if (!c || this.voices > 60) return;
+    const midi = 12 * (octave + 1) + pc, f = 440 * Math.pow(2, (midi - 69) / 12);
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = 'triangle'; o.frequency.value = f;
+    const now = c.currentTime, ring = 0.55;
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.11 * (0.3 + 0.7 * vel), now + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + ring);
+    o.connect(g);
+    let out = g;
+    if (c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = pan; g.connect(p); out = p; }
+    out.connect(this.master);
+    o.start(now); o.stop(now + ring + 0.03);
+    this.voices++; o.onended = () => { this.voices--; };
+  }
+};
+
+// -- video capture: file upload (looped to 20s) or webcam, downsampled to 40x40 grayscale --
+const srcVideo = $('src'), preview = $('preview');
+const leftSlot = $('leftSlot');
+let activeStream = null, mirrored = false;
+
+function stopActiveStream() {
+  if (activeStream) { activeStream.getTracks().forEach(t => t.stop()); activeStream = null; }
+}
+function setMirrored(on) {
+  mirrored = on;
+  // Only the raw preview needs a CSS flip. The 40x40 grid is sampled from the already-mirrored
+  // frame (see grabFrame), so its pixel data matches the preview without any extra CSS transform.
+  preview.classList.toggle('mirrored', on);
+  // webcam or uploaded file, the active source's preview always lives in the left slot.
+  preview.style.display = '';
+  leftSlot.appendChild(preview);
+}
+function useFile(file) {
+  setMirrored(false);   // an uploaded clip is footage, not a mirror of the person watching it
+  stopActiveStream();
+  const url = URL.createObjectURL(file);
+  srcVideo.srcObject = null; srcVideo.src = url; preview.src = url;
+  srcVideo.loop = false;
+  srcVideo.ontimeupdate = () => { if (srcVideo.currentTime >= 20) srcVideo.currentTime = 0; };
+  srcVideo.onended = () => { srcVideo.currentTime = 0; srcVideo.play(); };
+  srcVideo.play(); preview.play();
+}
+async function useWebcam() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+    stopActiveStream(); activeStream = stream;
+    srcVideo.src = ''; srcVideo.srcObject = stream; preview.srcObject = stream;
+    srcVideo.ontimeupdate = null; srcVideo.onended = null;
+    setMirrored(true);   // webcams read naturally when mirrored, like looking in a mirror
+    await srcVideo.play(); await preview.play();
+    return true;
+  } catch (err) {
+    $('camWarn').textContent = 'Could not access the camera: ' + err.message;
+    return false;
+  }
+}
+
+// downsample the current video frame to a 40x40 grayscale Float32Array (0..100)
+const sample = document.createElement('canvas'); sample.width = 40; sample.height = 40;
+const sctx = sample.getContext('2d', { willReadFrequently: true });
+const pixBuf = new Float32Array(40 * 40);
+function grabFrame() {
+  if (srcVideo.readyState < 2) return false;
+  const vw = srcVideo.videoWidth, vh = srcVideo.videoHeight;
+  if (!vw || !vh) return false;
+  // center-crop the source to a square before downsampling, so a 4:3 webcam or a portrait/widescreen
+  // upload never gets stretched -- the grid should show the same undistorted framing as the preview.
+  const side = Math.min(vw, vh);
+  const sx = (vw - side) / 2, sy = (vh - side) / 2;
+  sctx.save();
+  if (mirrored) { sctx.translate(40, 0); sctx.scale(-1, 1); }   // sample the same flipped frame we display
+  sctx.drawImage(srcVideo, sx, sy, side, side, 0, 0, 40, 40);
+  sctx.restore();
+  const d = sctx.getImageData(0, 0, 40, 40).data;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    pixBuf[p] = ((d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255) * 100;
+  }
+  return true;
+}
+
+// -- drawing --
+const grid = $('grid'), gctx = grid.getContext('2d');
+const flashes = []; // recent fires, for a brief colored pulse over the greyscale cell
+function draw() {
+  const cell = grid.width / 40;
+  gctx.fillStyle = '#0b0f0a'; gctx.fillRect(0, 0, grid.width, grid.height);
+  for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) {
+    const v = field.prevRaw[y * 40 + x];
+    const g = v < 0 ? 20 : Math.round((v / 100) * 255);
+    gctx.fillStyle = `rgb(${g},${g},${g})`;
+    gctx.fillRect(x * cell, y * cell, cell, cell);
+  }
+  const now = performance.now();
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const fl = flashes[i], age = (now - fl.at) / 260;
+    if (age > 1) { flashes.splice(i, 1); continue; }
+    const peak = fl.echo ? 0.35 : 0.85; // echoed notes flash dimmer than a real trigger
+    gctx.fillStyle = `hsla(${fl.pc * 30},85%,62%,${peak * (1 - age)})`;
+    gctx.fillRect(fl.x * cell, fl.y * cell, cell, cell);
+  }
+}
+
+// -- wire field callbacks to audio + visuals + header --
+field.onFire = e => {
+  flashes.push({ x: e.x, y: e.y, pc: e.pc, at: performance.now(), echo: e.echo });
+  audio.play(e.pc, e.octave, (e.x / 40 - 0.5) * 1.6, 0.4 + 0.6 * e.velocity);
+};
+function labelFor(slot) { return PC_NAMES[slot.root] + ' ' + QUALITY_LABEL[slot.quality]; }
+const slotSelects = []; // {rootSel, qualSel} per progression slot, for presets & interactive sync
+const colLabelEls = [...document.querySelectorAll('#colLabels span')];
+const rowLabelEls = [...document.querySelectorAll('#rowLabels span')];
+
+const PI_STRIP_LEN = 14; // the right column is narrow, so the strip runs vertically: current digit on top
+const piDigitEls = Array.from({ length: PI_STRIP_LEN }, () => {
+  const s = document.createElement('span'); $('piDigitsView').appendChild(s); return s;
+});
+function updatePiStrip() {
+  for (let k = 0; k < PI_STRIP_LEN; k++) {
+    const i = field.piIndex - k; // k=0 (top) is the current digit; older digits trail downward
+    const el = piDigitEls[k];
+    if (i < 0) { el.textContent = ''; el.style.background = '#152014'; el.classList.remove('now'); continue; }
+    const d = field.piDigits[((i % field.piDigits.length) + field.piDigits.length) % field.piDigits.length];
+    el.textContent = d;
+    const g = Math.round((d / 9) * 255);
+    el.style.background = `rgb(${g},${g},${g})`;
+    el.classList.toggle('now', k === 0);
+  }
+  $('piReadout').textContent = 'spread ' + field.effectiveSpread.toFixed(2);
+}
+function updateGridLabels() {
+  // columns: which pentatonic degree of the CURRENT chord each column band plays (changes with the chord)
+  for (let gx = 0; gx < 5; gx++) colLabelEls[gx].textContent = PC_NAMES[field.noteFor(gx, 0).pc];
+  // rows: which octave each row band plays (fixed; doesn't depend on the chord)
+  for (let gy = 0; gy < 5; gy++) rowLabelEls[gy].textContent = field.noteFor(0, gy).octave;
+}
+function refreshChordUI() {
+  $('chordName').textContent = labelFor(field.chord);
+  const next = field.progression[(field.chordIndex + 1) % field.progression.length];
+  $('nextChordName').textContent = labelFor(next);
+  [...document.querySelectorAll('.slot')].forEach((el, i) => el.classList.toggle('active', i === field.chordIndex));
+  // keep the slot selects in sync, e.g. after a preset load or an interactive-mode auto choice
+  slotSelects.forEach((s, i) => { s.rootSel.value = field.progression[i].root; s.qualSel.value = field.progression[i].quality; });
+  updateGridLabels();
+  document.documentElement.style.setProperty('--chord-hue', field.chord.root * 30);
+}
+field.onChordChange = refreshChordUI;
+
+// -- chord-slot controls: 4 slots, each a root + quality select --
+const chordRow = $('chordRow');
+field.progression.forEach((slot, i) => {
+  const wrap = document.createElement('div'); wrap.className = 'slot';
+  const rootSel = document.createElement('select'); rootSel.setAttribute('aria-label', 'Chord ' + (i + 1) + ' root');
+  [0,2,4,5,7,9,11].forEach(pc => { const o = document.createElement('option'); o.value = pc; o.textContent = PC_NAMES[pc]; rootSel.appendChild(o); });
+  rootSel.value = slot.root;
+  const qSel = document.createElement('select'); qSel.setAttribute('aria-label', 'Chord ' + (i + 1) + ' quality');
+  ['major','minor','dom7'].forEach(q => { const o = document.createElement('option'); o.value = q; o.textContent = QUALITY_LABEL[q]; qSel.appendChild(o); });
+  qSel.value = slot.quality;
+  const onChange = () => { field.setProgressionSlot(i, +rootSel.value, qSel.value); if (i === field.chordIndex) refreshChordUI(); };
+  rootSel.onchange = onChange; qSel.onchange = onChange;
+  wrap.append(String(i + 1) + '.', rootSel, qSel);
+  chordRow.appendChild(wrap);
+  slotSelects.push({ rootSel, qualSel: qSel });
+});
+refreshChordUI();
+
+// -- presets --
+const PRESET_1 = [[0,'major'],[9,'minor'],[5,'major'],[7,'dom7']];         // I - vi - IV - V7
+const PRESET_2 = [[9,'minor'],[5,'major'],[0,'major'],[4,'dom7']];         // i - VI - III - V7
+const INTERACTIVE_ROOTS = [0, 9, 5, 7];                                    // same root cycle as preset 1;
+                                                                             // quality is decided live instead
+function applyPreset(pairs) {
+  pairs.forEach(([root, quality], i) => field.setProgressionSlot(i, root, quality));
+  field.interactive = false;
+  afterProgressionChange();
+}
+function applyInteractive() {
+  // start every slot at major; each one only changes once real stimulus has driven a decision into it,
+  // so switching presets never leaves a confusing quality carried over from whatever preset was active before
+  INTERACTIVE_ROOTS.forEach((root, i) => field.setProgressionSlot(i, root, 'major'));
+  field.interactive = true;
+  afterProgressionChange();
+}
+function afterProgressionChange() {
+  slotSelects.forEach(s => { s.qualSel.disabled = field.interactive; });
+  $('leanGauge').classList.toggle('on', field.interactive);
+  [...document.querySelectorAll('#presetRow button')].forEach(b => b.classList.remove('active'));
+  refreshChordUI();
+}
+$('preset1').onclick = () => { applyPreset(PRESET_1); $('preset1').classList.add('active'); };
+$('preset2').onclick = () => { applyPreset(PRESET_2); $('preset2').classList.add('active'); };
+$('preset3').onclick = () => { applyInteractive(); $('preset3').classList.add('active'); };
+applyInteractive(); $('preset3').classList.add('active'); // default progression on load
+
+// -- other controls --
+$('gateToggle').onchange = () => { field.gateEnabled = $('gateToggle').checked; $('gate').disabled = !$('gateToggle').checked; };
+$('gate').oninput = () => { field.sensitivity = +$('gate').value; $('gateOut').textContent = $('gate').value; };
+// sensitivity 0..100 -> threshold on a log scale, high slider = more sensitive = lower threshold
+$('sens').oninput = () => { const t = +$('sens').value / 100; field.threshold = 3000 * Math.pow(20 / 3000, t); };
+// memory 0..100 -> decay per second on a log scale, high slider = longer memory = slower decay
+$('mem').oninput = () => { const t = +$('mem').value / 100; field.decayPerSec = 200 * Math.pow(2 / 200, t); };
+$('dwellToggle').onchange = () => {
+  field.dwellEnabled = $('dwellToggle').checked;
+  $('minDwell').disabled = $('maxDwell').disabled = !$('dwellToggle').checked;
+};
+$('minDwell').oninput = () => { field.minDwell = +$('minDwell').value; $('minDwellOut').textContent = $('minDwell').value; };
+$('maxDwell').oninput = () => { field.maxDwell = +$('maxDwell').value; $('maxDwellOut').textContent = $('maxDwell').value; };
+$('propToggle').onchange = () => {
+  field.propagationEnabled = $('propToggle').checked;
+  $('spread').disabled = $('echoVol').disabled = !$('propToggle').checked;
+};
+$('spread').oninput = () => { field.exciteSpread = (+$('spread').value) / 100; $('spreadOut').textContent = field.exciteSpread.toFixed(2); };
+$('echoVol').oninput = () => { field.echoVelocityScale = (+$('echoVol').value) / 100; $('echoVolOut').textContent = $('echoVol').value + '%'; };
+$('wrapToggle').onchange = () => { field.wrapEnabled = $('wrapToggle').checked; };
+
+const PI_SYMBOLS = { pi: '&pi;', e: 'e', sqrt2: '&radic;2', phi: '&phi;' };
+field.setIrrationalDigits(IRRATIONAL_SETS.pi);
+function syncPiVisibility() {
+  const on = $('piToggle').checked;
+  $('piStrip').classList.toggle('on', on);
+  $('piSymbolBig').classList.toggle('hidden', on); // big symbol when idle, live digit strip once running
+}
+$('piToggle').onchange = () => {
+  field.piEnabled = $('piToggle').checked;
+  $('piDepth').disabled = $('piGain').disabled = !$('piToggle').checked; // the constant picker stays usable either way
+  syncPiVisibility();
+};
+$('piConstant').onchange = () => {
+  field.setIrrationalDigits(IRRATIONAL_SETS[$('piConstant').value]);
+  $('piSymbolBig').innerHTML = PI_SYMBOLS[$('piConstant').value];
+};
+syncPiVisibility(); // reflect piToggle's starting state (checked by default) on load
+$('piDepth').oninput = () => { field.piModDepth = (+$('piDepth').value) / 100; $('piDepthOut').textContent = $('piDepth').value + '%'; };
+$('piGain').oninput = () => { field.piActivityGain = (+$('piGain').value) / 10; $('piGainOut').textContent = field.piActivityGain.toFixed(1); };
+
+$('sens').oninput(); $('mem').oninput(); $('spread').oninput(); $('echoVol').oninput(); $('piDepth').oninput(); $('piGain').oninput();
+$('reset').onclick = () => { field.reset(); refreshChordUI(); };
+
+// -- loop --
+let running = false, lastTick = 0;
+function frame(ts) {
+  if (running && ts - lastTick > 95) {
+    const dt = Math.min(0.3, (ts - lastTick) / 1000 || 0.1); lastTick = ts;
+    if (grabFrame()) field.process(pixBuf, dt);
+    const pct = Math.min(100, (field.energy / field.threshold) * 100);
+    $('meterFill').style.width = pct + '%';
+    $('meterPct').textContent = Math.round(pct) + '%';
+    const untilForced = Math.max(0, field.maxDwell - field.timeInChord);
+    $('dwellInfo').textContent = pct >= 99 ? 'changing…' : field.dwellEnabled ? 'or in ' + untilForced.toFixed(0) + 's of quiet' : '';
+    if (field.interactive) {
+      const total = field.topEnergy + field.bottomEnergy;
+      const majorPct = total > 0 ? (field.topEnergy / total) * 100 : 50;
+      const minorPct = 100 - majorPct;
+      $('majorFill').style.width = majorPct + '%';
+      $('minorFill').style.width = minorPct + '%';
+      $('majorPct').textContent = Math.round(majorPct) + '%';
+      $('minorPct').textContent = Math.round(minorPct) + '%';
+      // ambient background glow: same lean, faded in/out by how much recent stimulus there's been
+      const activity = Math.min(1, total / field.threshold);
+      $('ambientTop').style.opacity = (majorPct / 100) * activity;
+      $('ambientBottom').style.opacity = (minorPct / 100) * activity;
+    } else {
+      $('ambientTop').style.opacity = 0;
+      $('ambientBottom').style.opacity = 0;
+    }
+    if (field.piEnabled) updatePiStrip();
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// -- start overlay: choose a source, which also satisfies the audio-autoplay gesture requirement --
+$('pickFile').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { if (e.target.files[0]) { audio.start(); useFile(e.target.files[0]); running = true; $('overlay').style.display = 'none'; } };
+$('pickCam').onclick = async () => { audio.start(); const ok = await useWebcam(); if (ok) { running = true; $('overlay').style.display = 'none'; } };
+$('swap').onclick = () => { running = false; stopActiveStream(); $('overlay').style.display = 'flex'; $('camWarn').textContent = ''; };
+
+// drop zone (below the preview): drag a video in anytime to switch to it, or click/press to browse
+const dropzone = $('dropzone');
+function acceptDroppedVideo(file) {
+  if (!file || !file.type.startsWith('video/')) return;
+  audio.start(); useFile(file); running = true; $('overlay').style.display = 'none';
+}
+['dragenter', 'dragover'].forEach(evt => dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('dragover'); }));
+['dragleave', 'dragend'].forEach(evt => dropzone.addEventListener(evt, () => dropzone.classList.remove('dragover')));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.classList.remove('dragover');
+  acceptDroppedVideo(e.dataTransfer.files && e.dataTransfer.files[0]);
+});
+dropzone.addEventListener('click', () => $('fileInput').click());
+dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('fileInput').click(); } });
+
+function tickOnce(dt) { const ok = grabFrame(); if (ok) field.process(pixBuf, dt); return ok; }
+window.pixelChorus = { field, audio, draw, grabFrame, pixBuf, tickOnce };
+// ==== APP END ====
+</script>
+</body>
+</html>
