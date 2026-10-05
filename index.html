@@ -103,6 +103,9 @@
   #overlay p{margin:0;max-width:46ch;color:var(--muted);font-size:15px}
   #overlay .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
   #overlay input[type=file]{color:var(--muted)}
+  #overlay .sampleLabel{color:#5a6e53;font-size:12px;margin:4px 0 0}
+  button.sample{background:#111a0e;color:var(--muted);border:1px solid #2a3e24;border-radius:3px;padding:5px 10px;font:inherit;cursor:pointer}
+  button.sample:hover,button.sample:focus-visible{border-color:var(--hot);color:var(--ink)}
   #camWarn{color:#e0a37f;font-size:13px;min-height:1.2em}
 </style>
 </head>
@@ -218,6 +221,12 @@
     <button id="pickCam" class="primary" type="button">Use webcam</button>
   </div>
   <input id="fileInput" type="file" accept="video/*" style="display:none">
+  <p class="sampleLabel">or try a sample clip:</p>
+  <div class="row" id="sampleRow">
+    <button class="sample" type="button" data-src="./samples/trees.mp4">&#127795; Trees</button>
+    <button class="sample" type="button" data-src="./samples/campus.mp4">&#127963; Campus</button>
+    <button class="sample" type="button" data-src="./samples/printer.mp4">&#128424; 3D printer</button>
+  </div>
   <div id="camWarn"></div>
 </div>
 
@@ -493,16 +502,17 @@ function setMirrored(on) {
   preview.style.display = '';
   leftSlot.appendChild(preview);
 }
-function useFile(file) {
-  setMirrored(false);   // an uploaded clip is footage, not a mirror of the person watching it
+function playFootage(url) {
+  setMirrored(false);   // footage (an upload or a sample) is not a mirror of the person watching it
   stopActiveStream();
-  const url = URL.createObjectURL(file);
   srcVideo.srcObject = null; srcVideo.src = url; preview.src = url;
   srcVideo.loop = false;
   srcVideo.ontimeupdate = () => { if (srcVideo.currentTime >= 20) srcVideo.currentTime = 0; };
   srcVideo.onended = () => { srcVideo.currentTime = 0; srcVideo.play(); };
   srcVideo.play(); preview.play();
 }
+function useFile(file) { playFootage(URL.createObjectURL(file)); }
+function useSampleVideo(url) { playFootage(url); }
 async function useWebcam() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
@@ -734,6 +744,9 @@ requestAnimationFrame(frame);
 
 // -- start overlay: choose a source, which also satisfies the audio-autoplay gesture requirement --
 $('pickFile').onclick = () => $('fileInput').click();
+[...document.querySelectorAll('#sampleRow .sample')].forEach(btn => {
+  btn.onclick = () => { audio.start(); useSampleVideo(btn.dataset.src); running = true; $('overlay').style.display = 'none'; };
+});
 $('fileInput').onchange = e => { if (e.target.files[0]) { audio.start(); useFile(e.target.files[0]); running = true; $('overlay').style.display = 'none'; } };
 $('pickCam').onclick = async () => { audio.start(); const ok = await useWebcam(); if (ok) { running = true; $('overlay').style.display = 'none'; } };
 $('swap').onclick = () => { running = false; stopActiveStream(); $('overlay').style.display = 'flex'; $('camWarn').textContent = ''; };
